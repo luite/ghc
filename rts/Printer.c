@@ -646,6 +646,20 @@ void printTSO( StgTSO *tso )
     printStack( tso->stackobj );
 }
 
+
+void printTupleSig ( const unsigned char* sig)
+{
+    const char* arg_tys = "_PNLFD";
+    const char* loc_tys = "_SRFDLXYZ";
+    while(*sig) {
+        int arg_ty = (int)sig[0];
+        int loc_ty = (int)sig[1];
+        int off    = (int)sig[2];
+        debugBelch("%c%c%d ", arg_tys[arg_ty], loc_tys[loc_ty], off);
+        sig += 3;
+    }
+}
+
 /* --------------------------------------------------------------------------
  * Address printing code
  *

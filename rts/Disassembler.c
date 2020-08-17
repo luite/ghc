@@ -148,6 +148,13 @@ disInstr ( StgBCO *bco, int pc )
          debugBelch("PUSH_ALTS_V  " ); printPtr( ptrs[instrs[pc]] );
          debugBelch("\n");
          pc += 1; break;
+      case bci_PUSH_ALTS_T:
+         // fixme final size of instruction
+         debugBelch("PUSH_ALTS_T  "); printPtr( ptrs[instrs[pc]] );
+         debugBelch(" %d ", instrs[pc+1]);
+         printTupleSig(literals[instrs[pc+2]]);
+         debugBelch("\n");
+         pc += 3; break;
       case bci_PUSH_PAD8:
          debugBelch("PUSH_PAD8\n");
          pc += 1; break;
@@ -313,7 +320,14 @@ disInstr ( StgBCO *bco, int pc )
       case bci_RETURN_V:
          debugBelch("RETURN_V\n" );
          break;
-
+      case bci_RETURN_T:
+         // fixme update for final size of return_t instr
+         // fixme indirection to literals?
+         debugBelch("RETURN_T %d ", instrs[pc]);
+         printTupleSig( literals[instrs[pc+1]] );
+         debugBelch("\n");
+         pc += 2;
+         break;
       default:
          barf("disInstr: unknown opcode %u", (unsigned int) instr);
    }

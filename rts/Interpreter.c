@@ -364,6 +364,10 @@ interpretBCO (Capability* cap)
     //       do_return_unboxed, below.
     //
     else {
+        IF_DEBUG(interpreter,
+                 debugBelch("warning: do_return_unboxed unhandled case\n");
+                );
+
         goto do_return_unboxed;
     }
 
@@ -673,34 +677,70 @@ do_return:
 
 do_return_unboxed:
     {
+        // debugBelch("returning unboxed\n");
         int offset;
-
-        ASSERT(    SpW(0) == (W_)&stg_ret_v_info
+        int ubx_tup;
+        if(SpW(0) == (W_)&stg_ret_v_info
                 || SpW(0) == (W_)&stg_ret_p_info
                 || SpW(0) == (W_)&stg_ret_n_info
                 || SpW(0) == (W_)&stg_ret_f_info
                 || SpW(0) == (W_)&stg_ret_d_info
                 || SpW(0) == (W_)&stg_ret_l_info
-            );
+            ) {
+                IF_DEBUG(interpreter,
+                   debugBelch("normal unboxed return\n");
+                );
+                ubx_tup = 0;
+            } else {
+                ubx_tup = SpW(0);
+                IF_DEBUG(interpreter,
+                    debugBelch("tuple unboxed return size %d\n", ubx_tup);
+                );
+            }
 
         IF_DEBUG(interpreter,
              debugBelch(
              "\n---------------------------------------------------------------\n");
-             debugBelch("Returning: "); printObj(obj);
+             debugBelch("Returning unboxed x: "); // printObj(obj);
              debugBelch("Sp = %p\n", Sp);
 #if defined(PROFILING)
              fprintCCS(stderr, cap->r.rCCCS);
              debugBelch("\n");
 #endif
              debugBelch("\n");
-             printStackChunk(Sp,cap->r.rCurrentTSO->stackobj->stack+cap->r.rCurrentTSO->stackobj->stack_size);
+             debugBelch("printing stack chunk\n");
+             if(!ubx_tup) {
+                 printStackChunk(Sp,cap->r.rCurrentTSO->stackobj->stack+cap->r.rCurrentTSO->stackobj->stack_size);
+             }
              debugBelch("\n\n");
             );
 
+        IF_DEBUG(interpreter,
+            debugBelch("before offset\n");
+        );
+
         // get the offset of the stg_ctoi_ret_XXX itbl
-        offset = stack_frame_sizeW((StgClosure *)Sp);
+        // fixme changed to after return!
+        if(ubx_tup) { 
+            offset = ubx_tup + 1;
+        } else {
+            offset = stack_frame_sizeW((StgClosure *)Sp);
+        }
+        /* if(bci == bci_RETURN_T) {
+            debugBelch("unboxed tuple, adjusting offset\n");
+            offset = 0;
+        } */
+        // yeah it crashes here
+        IF_DEBUG(interpreter,
+            debugBelch("offset: %d\n", offset);
+        );
+
 
         switch (get_itbl((StgClosure*)(Sp_plusW(offset)))->type) {
+
+        IF_DEBUG(interpreter,
+            debugBelch("got itable\n");
+        );
 
         case RET_BCO:
             // Returning to an interpreted continuation: put the object on
@@ -988,16 +1028,16 @@ run_BCO:
         ASSERT(bciPtr < bcoSize);
         IF_DEBUG(interpreter,
                  //if (do_print_stack) {
-                 //debugBelch("\n-- BEGIN stack\n");
-                 //printStack(Sp,cap->r.rCurrentTSO->stack+cap->r.rCurrentTSO->stack_size,iSu);
-                 //debugBelch("-- END stack\n\n");
+                 // debugBelch("\n-- BEGIN stack\n");
+                 // printStack(Sp,cap->r.rCurrentTSO->stack+cap->r.rCurrentTSO->stack_size,iSu);
+                 // debugBelch("-- END stack\n\n");
                  //}
                  debugBelch("Sp = %p   pc = %-4d ", Sp, bciPtr);
                  disInstr(bco,bciPtr);
-                 if (0) { int i;
+                 if (1) { int i;
                  debugBelch("\n");
-                 for (i = 8; i >= 0; i--) {
-                     debugBelch("%d  %p\n", i, (void *) SpW(i));
+                 for (i = 42; i >= 0; i--) {
+                     debugBelch("%d  %p (%ld)\n", i, (void *) SpW(i), SpW(i));
                  }
                  debugBelch("\n");
                  }
@@ -1316,6 +1356,22 @@ run_BCO:
         case bci_PUSH_ALTS_V: {
             int o_bco  = BCO_GET_LARGE_ARG;
             SpW(-2) = (W_)&stg_ctoi_V_info;
+            SpW(-1) = BCO_PTR(o_bco);
+            Sp_subW(2);
+#if defined(PROFILING)
+            Sp_subW(2);
+            SpW(1) = (W_)cap->r.rCCCS;
+            SpW(0) = (W_)&stg_restore_cccs_info;
+#endif
+            goto nextInsn;
+        }
+
+        case bci_PUSH_ALTS_T: {
+            int o_bco = BCO_GET_LARGE_ARG;
+            int size = BCO_NEXT;
+            char* lit = literals[BCO_GET_LARGE_ARG];
+            /* fixme push shape on stack? */
+            SpW(-2) = (W_)&stg_ctoi_T_info; /* fixme */
             SpW(-1) = BCO_PTR(o_bco);
             Sp_subW(2);
 #if defined(PROFILING)
@@ -1705,6 +1761,16 @@ run_BCO:
             Sp_subW(1);
             SpW(0) = (W_)&stg_ret_v_info;
             goto do_return_unboxed;
+        case bci_RETURN_T: {
+            // fixme should we fix to large args for tuples if needed?
+            int size = BCO_NEXT; // BCO_GET_LARGE_ARG;
+            char* shape = literals[BCO_GET_LARGE_ARG];
+            // debugBelch("returning unboxed tup size: %d\n", size);
+            Sp_subW(1);
+            SpW(0) = size; // fixme have proper frame here
+            // Sp_addW(size);
+            goto do_return_unboxed;
+        }
 
         case bci_SWIZZLE: {
             int stkoff = BCO_NEXT;

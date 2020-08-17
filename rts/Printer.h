@@ -12,7 +12,6 @@
 
 extern void        printPtr        ( StgPtr p );
 extern void        printObj        ( StgClosure *obj );
-
 extern const char *  closure_type_names[];
 
 void               info_hdr_type   ( const StgClosure *closure, char *res );

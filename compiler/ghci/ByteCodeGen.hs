@@ -1,5 +1,6 @@
 {-# LANGUAGE CPP, MagicHash, RecordWildCards, BangPatterns #-}
 {-# LANGUAGE GeneralizedNewtypeDeriving #-}
+{-# LANGUAGE StandaloneDeriving #-}
 {-# OPTIONS_GHC -fprof-auto-top #-}
 --
 --  (c) The University of Glasgow 2002-2006
@@ -74,6 +75,96 @@ import qualified FiniteMap as Map
 import Data.Ord
 import GHC.Stack.CCS
 import Data.Either ( partitionEithers )
+
+--- debug stuff, remove!
+import qualified Var as Var
+import qualified CostCentre
+import TyCoRep
+import IdInfo
+import UniqDSet
+
+encodeUnique _ = "<U>"
+
+-- this is a hack to be able to use pprShow in a Show instance, should be removed
+{-# NOINLINE hackPprDflags #-}
+hackPprDflags :: DynFlags
+hackPprDflags = unsafeGlobalDynFlags
+
+-- | replace all whitespace with space
+fixSpace :: String -> String
+fixSpace xs = map f xs
+  where
+    f c | isSpace c = ' '
+        | otherwise = c
+
+
+-- fixme make this more informative
+instance Show Type where
+  show ty = fixSpace (showPpr hackPprDflags ty)
+instance Show CostCentre where show _ = "CostCentre"
+instance Show CostCentre.CostCentre where show _ = "CostCentre"
+instance Show CostCentreStack where show _ = "CostCentreStack"
+-- instance Show StgBinderInfo where show _ = "StgBinderInfo"
+instance Show Module where show m = unitIdString (moduleUnitId m) ++ ":" ++ moduleNameString (moduleName m)
+-- instance Show (UniqFM Id) where show u = "[" ++ show (uniqSetToList u) ++ "]"
+instance Show TyCon where show = show . tyConName
+instance Show Name where
+  show n = case nameModule_maybe n of
+                  Nothing -> show (nameOccName n)
+                  Just m  -> show m ++ "." ++ show (nameOccName n)
+instance Show OccName where show = occNameString
+instance Show DataCon where show d = show (dataConName d)
+instance Show Var where show v = "(" ++ show (Var.varName v) ++ "[" ++
+                                 encodeUnique (getKey (getUnique v)) ++
+                                 "]" ++ if isGlobalId v then "G" else "L" ++
+                                 " <" ++ show (idDetails v) ++ "> :: " ++
+                                 show (Var.varType v) ++ ")"
+instance Show IdDetails where
+  show VanillaId          = "VanillaId"
+  show (RecSelId {})      = "RecSelId"
+  show (DataConWorkId dc) = "DataConWorkId " ++ show dc
+  show (DataConWrapId dc) = "DataConWrapId " ++ show dc
+  show (ClassOpId {})     = "ClassOpId"
+  show (PrimOpId {})      = "PrimOpId"
+  show (FCallId {})       = "FCallId"
+  show (TickBoxOpId {})   = "VanillaId"
+  show (DFunId {})        = "DFunId"
+  show CoVarId            = "CoVarId"
+  show (JoinId {})        = "JoinId"
+
+-- deriving instance Show UpdateFlag
+deriving instance Show PrimOpVecCat
+deriving instance Show LitNumType
+deriving instance Show Literal
+deriving instance Show PrimOp
+deriving instance Show AltCon
+deriving instance Show PrimCall
+deriving instance Show ForeignCall
+deriving instance Show CCallTarget
+deriving instance Show CCallSpec
+deriving instance Show CCallConv
+deriving instance Show FunctionOrData
+deriving instance Show a => Show (Tickish a)
+--
+instance Show Coercion where show co = showPpr hackPprDflags co
+deriving instance Show a => Show (Expr a)
+deriving instance Show a => Show (Bind a)
+deriving instance Show LeftOrRight
+deriving instance Show Role
+deriving instance Show UnfoldingGuidance
+deriving instance Show UnfoldingSource
+deriving instance Show Unfolding
+deriving instance (Show bndr, Show annot) => Show (AnnBind bndr annot)
+deriving instance (Show bndr, Show annot) => Show (AnnExpr' bndr annot)
+instance Show elem => Show (UniqDSet elem) where
+  show = show . uniqDSetToList
+
+traceCBC :: String -> BcM ()
+traceCBC msg
+  | True      = pure ()
+--  | otherwise = ioToBc (putStrLn msg)
+
+-- end debug stuff
 
 -- -----------------------------------------------------------------------------
 -- Generating byte code for a complete module
@@ -195,10 +286,10 @@ simpleFreeVars = freeVars
 type BCInstrList = OrdList BCInstr
 
 newtype ByteOff = ByteOff Int
-    deriving (Enum, Eq, Integral, Num, Ord, Real)
+    deriving (Enum, Eq, Show, Integral, Num, Ord, Real)
 
 newtype WordOff = WordOff Int
-    deriving (Enum, Eq, Integral, Num, Ord, Real)
+    deriving (Enum, Eq, Show, Integral, Num, Ord, Real)
 
 wordsToBytes :: DynFlags -> WordOff -> ByteOff
 wordsToBytes dflags = fromIntegral . (* wORD_SIZE dflags) . fromIntegral
@@ -222,16 +313,14 @@ type StackDepth = ByteOff
 -- it after each push/pop.
 type BCEnv = Map Id StackDepth -- To find vars on the stack
 
-{-
-ppBCEnv :: BCEnv -> SDoc
+ppBCEnv :: HasDebugCallStack => BCEnv -> SDoc
 ppBCEnv p
    = text "begin-env"
      $$ nest 4 (vcat (map pp_one (sortBy cmp_snd (Map.toList p))))
      $$ text "end-env"
      where
-        pp_one (var, offset) = int offset <> colon <+> ppr var <+> ppr (bcIdArgRep var)
+        pp_one (var, ByteOff offset) = int offset <> colon <+> ppr var <+> ppr (bcIdArgReps var)
         cmp_snd x y = compare (snd x) (snd y)
--}
 
 -- Create a BCO and do a spot of peephole optimisation on the insns
 -- at the same time.
@@ -315,7 +404,7 @@ schemeTopBind (id, rhs)
         -- because mkConAppCode treats nullary constructor applications
         -- by just re-using the single top-level definition.  So
         -- for the worker itself, we must allocate it directly.
-    -- ioToBc (putStrLn $ "top level BCO")
+    traceCBC "top level BCO"
     emitBc (mkProtoBCO dflags (getName id) (toOL [PACK data_con 0, ENTER])
                        (Right rhs) 0 0 [{-no bitmap-}] False{-not alts-})
 
@@ -341,17 +430,23 @@ schemeR :: [Id]                 -- Free vars of the RHS, ordered as they
         -> (Id, AnnExpr Id DVarSet)
         -> BcM (ProtoBCO Name)
 schemeR fvs (nm, rhs)
-{-
-   | trace (showSDoc (
+{-   | trace (showSDoc (
               (char ' '
                $$ (ppr.filter (not.isTyVar).dVarSetElems.fst) rhs
                $$ pprCoreExpr (deAnnotate rhs)
                $$ char ' '
               ))) False
    = undefined
-   | otherwise
--}
-   = schemeR_wrk fvs nm rhs (collect rhs)
+   | otherwise -}
+   = do
+     dflags <- getDynFlags
+     traceCBC ("schemeR:\n" ++ showSDoc dflags (
+                (char ' '
+                $$ (ppr.filter (not.isTyVar).dVarSetElems.fst) rhs
+                $$ pprCoreExpr (deAnnotate rhs)
+                $$ char ' '
+                )))
+     schemeR_wrk fvs nm rhs (collect rhs)
 
 -- If an expression is a lambda (after apply bcView), return the
 -- list of arguments to the lambda (in R-to-L order) and the
@@ -466,7 +561,8 @@ fvsToEnv p fvs = [v | v <- dVarSetElems fvs,
 -- schemeE
 
 returnUnboxedAtom
-    :: StackDepth
+    :: HasDebugCallStack
+    => StackDepth
     -> Sequel
     -> BCEnv
     -> AnnExpr' Id DVarSet
@@ -479,7 +575,26 @@ returnUnboxedAtom d s p e e_rep = do
     (push, szb) <- pushAtom d p e
     return (push                                 -- value onto stack
            `appOL`  mkSlideB dflags szb (d - s)  -- clear to sequel
-           `snocOL` RETURN_UBX e_rep)            -- go
+           `snocOL` RETURN_UBX [e_rep])          -- go
+
+returnUnboxedAtomT
+    :: HasDebugCallStack
+    => StackDepth
+    -> Sequel
+    -> BCEnv
+    -> [AnnExpr' Id DVarSet]
+    -> [ArgRep]
+    -> BcM BCInstrList
+-- Returning an unlifted value.
+-- Heave it on the stack, SLIDE, and RETURN.
+returnUnboxedAtomT d s p es e_reps = do
+    dflags <- getDynFlags
+    let platform = targetPlatform dflags
+    (pushes, szbs) <- unzip <$> mapM (\(off, a) -> pushAtom (d+wordsToBytes dflags off) p a) (zip [0..] es)
+    traceCBC ("returnUnboxedAtomT:\nl: " ++ show (length e_reps) ++ " " ++ show szbs)
+    return (mconcat pushes                                  -- value onto stack
+           `appOL`  mkSlideB dflags (sum szbs) (d - s) -- clear to sequel
+           `snocOL` RETURN_UBX e_reps)             -- go
 
 -- Compile code to apply the given expression to the remaining args
 -- on the stack, returning a HNF.
@@ -501,7 +616,7 @@ schemeE d s p e@(AnnVar v)
                                   AnnApp (bogus_fvs, AnnVar (protectLPJoinPointId v))
                                          (bogus_fvs, AnnVar voidPrimId)
                          -- schemeT will call splitApp, dropping the fvs.
-
+    | isUnboxedTupleType (idType v) = returnUnboxedAtomT d s p [e] (bcIdArgReps v) -- fixme split tuple? yup! BUG BUG BUG!
     | isUnliftedType (idType v) = returnUnboxedAtom d s p e (bcIdArgRep v)
     | otherwise                 = schemeT d s p e
     where
@@ -772,7 +887,8 @@ Right Fix is to take advantage of join points as goto-labels.
 -- 4.  Otherwise, it must be a function call.  Push the args
 --     right to left, SLIDE and ENTER.
 
-schemeT :: StackDepth   -- Stack depth
+schemeT :: HasDebugCallStack
+        => StackDepth   -- Stack depth
         -> Sequel       -- Sequel depth
         -> BCEnv        -- stack env
         -> AnnExpr' Id DVarSet
@@ -795,11 +911,12 @@ schemeT d s p app
    | Just con <- maybe_saturated_dcon
    , isUnboxedTupleCon con
    = case args_r_to_l of
+     {- special cases should be handled by general now
         [arg1,arg2] | isVAtom arg1 ->
                   unboxedTupleReturn d s p arg2
         [arg1,arg2] | isVAtom arg2 ->
-                  unboxedTupleReturn d s p arg1
-        _other -> multiValException
+                  unboxedTupleReturn d s p arg1 -}
+        other -> genericUnboxedTupleReturn d s p other
 
    -- Case 3: Ordinary data constructor
    | Just con <- maybe_saturated_dcon
@@ -832,7 +949,8 @@ schemeT d s p app
 -- leaving it on top of the stack
 
 mkConAppCode
-    :: StackDepth
+    :: HasDebugCallStack
+    => StackDepth
     -> Sequel
     -> BCEnv
     -> DataCon                  -- The data constructor
@@ -883,14 +1001,22 @@ mkConAppCode orig_d _ p con args_r_to_l =
 -- returned, even if it is a pointed type.  We always just return.
 
 unboxedTupleReturn
-    :: StackDepth -> Sequel -> BCEnv -> AnnExpr' Id DVarSet -> BcM BCInstrList
+    :: HasDebugCallStack => StackDepth -> Sequel -> BCEnv -> AnnExpr' Id DVarSet -> BcM BCInstrList
 unboxedTupleReturn d s p arg = returnUnboxedAtom d s p arg (atomRep arg)
+
+genericUnboxedTupleReturn
+    :: HasDebugCallStack => StackDepth -> Sequel -> BCEnv -> [AnnExpr' Id DVarSet] -> BcM BCInstrList
+genericUnboxedTupleReturn d s p args =
+  returnUnboxedAtomT d s p args (map atomRep args)
+  -- panic "genericUnboxedTupleReturn"
+
 
 -- -----------------------------------------------------------------------------
 -- Generate code for a tail-call
 
 doTailCall
-    :: StackDepth
+    :: HasDebugCallStack
+    => StackDepth
     -> Sequel
     -> BCEnv
     -> Id
@@ -951,7 +1077,8 @@ findPushSeq _
 -- Case expressions
 
 doCase
-    :: StackDepth
+    :: HasDebugCallStack
+    => StackDepth
     -> Sequel
     -> BCEnv
     -> AnnExpr Id DVarSet
@@ -961,9 +1088,6 @@ doCase
                  -- don't enter the result
     -> BcM BCInstrList
 doCase d s p (_,scrut) bndr alts is_unboxed_tuple
-  | typePrimRep (idType bndr) `lengthExceeds` 1
-  = multiValException
-  | otherwise
   = do
      dflags <- getDynFlags
      let
@@ -982,6 +1106,7 @@ doCase d s p (_,scrut) bndr alts is_unboxed_tuple
         save_ccs_size_b | profiling = 2 * wordSize dflags
                         | otherwise = 0
 
+        bndr_size = wordsToBytes dflags (idSizeW dflags bndr)
         -- An unlifted value gets an extra info table pushed on top
         -- when it is returned.
         unlifted_itbl_size_b :: StackDepth
@@ -990,7 +1115,7 @@ doCase d s p (_,scrut) bndr alts is_unboxed_tuple
 
         -- depth of stack after the return value has been pushed
         d_bndr =
-            d + ret_frame_size_b + wordsToBytes dflags (idSizeW dflags bndr)
+            d + ret_frame_size_b + bndr_size -- wordsToBytes dflags (idSizeW dflags bndr)
 
         -- depth of stack after the extra info table for an unboxed return
         -- has been pushed, if any.  This is the stack depth at the
@@ -1018,11 +1143,24 @@ doCase d s p (_,scrut) bndr alts is_unboxed_tuple
            | null real_bndrs = do
                 rhs_code <- schemeE d_alts s p_alts rhs
                 return (my_discr alt, rhs_code)
-           -- If an alt attempts to match on an unboxed tuple or sum, we must
-           -- bail out, as the bytecode compiler can't handle them.
-           -- (See Trac #14608.)
-           | any (\bndr -> typePrimRep (idType bndr) `lengthExceeds` 1) bndrs
-           = multiValException
+           | isUnboxedTupleType bndr_ty =
+             let (tot_wds, _ptrs_wds, args_offsets) =
+                     mkVirtHeapOffsets dflags NoHeader
+                         [ NonVoid (bcIdPrimRep id, id)
+                         | NonVoid id <- nonVoidIds real_bndrs
+                         ]
+
+                 stack_bot = d_alts -- + wordsToBytes platform size
+                 tuple_start = d_bndr -- stack_bot - wordsToBytes platform (WordOff tot_wds + 1)
+               
+                 p' = Map.insertList
+                        [ (arg, tuple_start - ByteOff offset)
+                        | (NonVoid arg, offset) <- args_offsets ]
+                        p_alts
+             in do
+               traceCBC ("ubx tup cont: " ++ show (stack_bot,tuple_start,tot_wds) ++ "\n" ++  show args_offsets)
+               rhs_code <- schemeE stack_bot s p' rhs
+               return (NoDiscr, rhs_code)
            -- algebraic alt with some binders
            | otherwise =
              let (tot_wds, _ptrs_wds, args_offsets) =
@@ -1050,7 +1188,7 @@ doCase d s p (_,scrut) bndr alts is_unboxed_tuple
         my_discr (DEFAULT, _, _) = NoDiscr {-shouldn't really happen-}
         my_discr (DataAlt dc, _, _)
            | isUnboxedTupleCon dc || isUnboxedSumCon dc
-           = multiValException
+           = NoDiscr
            | otherwise
            = DiscrP (fromIntegral (dataConTag dc - fIRST_TAG))
         my_discr (LitAlt l, _, _)
@@ -1092,7 +1230,8 @@ doCase d s p (_,scrut) bndr alts is_unboxed_tuple
           -- NB: unboxed tuple cases bind the scrut binder to the same offset
           -- as one of the alt binders, so we have to remove any duplicates here:
           rel_slots = nub $ map fromIntegral $ concat (map spread binds)
-          spread (id, offset) | isFollowableArg (bcIdArgRep id) = [ rel_offset ]
+          spread (id, offset) | isUnboxedTupleType (idType id) = []
+                              | isFollowableArg (bcIdArgRep id) = [ rel_offset ]
                               | otherwise                      = []
                 where rel_offset = trunc16W $ bytesToWords dflags (d - offset)
 
@@ -1103,8 +1242,14 @@ doCase d s p (_,scrut) bndr alts is_unboxed_tuple
          alt_bco_name = getName bndr
          alt_bco = mkProtoBCO dflags alt_bco_name alt_final (Left alts)
                        0{-no arity-} bitmap_size bitmap True{-is alts-}
---     trace ("case: bndr = " ++ showSDocDebug (ppr bndr) ++ "\ndepth = " ++ show d ++ "\nenv = \n" ++ showSDocDebug (ppBCEnv p) ++
---            "\n      bitmap = " ++ show bitmap) $ do
+     traceCBC (
+                 "case: bndr = " ++ showSDocDebug dflags (ppr bndr) ++
+                 "\nbndr_size = " ++ show bndr_size ++
+                 "\ndepth = " ++ show d ++
+                 "\nenv = \n" ++ showSDocDebug dflags (ppBCEnv p) ++
+                 "\n      bitmap = " ++ show bitmap ++
+                 "\n      ret_frame_size = " ++ show ret_frame_size_b
+              )
 
      scrut_code <- schemeE (d + ret_frame_size_b + save_ccs_size_b)
                            (d + ret_frame_size_b + save_ccs_size_b)
@@ -1112,7 +1257,7 @@ doCase d s p (_,scrut) bndr alts is_unboxed_tuple
      alt_bco' <- emitBc alt_bco
      let push_alts
             | isAlgCase = PUSH_ALTS alt_bco'
-            | otherwise = PUSH_ALTS_UNLIFTED alt_bco' (typeArgRep bndr_ty)
+            | otherwise = PUSH_ALTS_UNLIFTED alt_bco' (typeArgReps bndr_ty)
      return (push_alts `consOL` scrut_code)
 
 
@@ -1328,7 +1473,7 @@ generateCCall d0 s p (CCallSpec target cconv safety) fn args_r_to_l
          -- slide and return
          d_after_r_min_s = bytesToWords dflags (d_after_r - s)
          wrapup       = mkSlideW (trunc16W r_sizeW) (d_after_r_min_s - r_sizeW)
-                        `snocOL` RETURN_UBX (toArgRep r_rep)
+                        `snocOL` RETURN_UBX [toArgRep r_rep]
          --trace (show (arg1_offW, args_offW  ,  (map argRepSizeW a_reps) )) $
      return (
          push_args `appOL`
@@ -1461,7 +1606,8 @@ a 1-word null. See Trac #8383.
 
 
 implement_tagToId
-    :: StackDepth
+    :: HasDebugCallStack
+    => StackDepth
     -> Sequel
     -> BCEnv
     -> AnnExpr' Id DVarSet
@@ -1512,7 +1658,7 @@ implement_tagToId d s p arg names
 -- depth 6 stack has valid words 0 .. 5.
 
 pushAtom
-    :: StackDepth -> BCEnv -> AnnExpr' Id DVarSet -> BcM (BCInstrList, ByteOff)
+    :: HasDebugCallStack => StackDepth -> BCEnv -> AnnExpr' Id DVarSet -> BcM (BCInstrList, ByteOff)
 pushAtom d p e
    | Just e' <- bcView e
    = pushAtom d p e'
@@ -1608,7 +1754,7 @@ pushAtom _ _ expr
 -- This is slightly different to @pushAtom@ due to the fact that we allow
 -- packing constructor fields. See also @mkConAppCode@ and @pushPadding@.
 pushConstrAtom
-    :: StackDepth -> BCEnv -> AnnExpr' Id DVarSet -> BcM (BCInstrList, ByteOff)
+    :: HasDebugCallStack => StackDepth -> BCEnv -> AnnExpr' Id DVarSet -> BcM (BCInstrList, ByteOff)
 
 pushConstrAtom _ _ (AnnLit lit@(LitFloat _)) =
     return (unitOL (PUSH_UBX32 lit), 4)
@@ -1628,7 +1774,7 @@ pushConstrAtom d p (AnnVar v)
 
 pushConstrAtom d p expr = pushAtom d p expr
 
-pushPadding :: Int -> (BCInstrList, ByteOff)
+pushPadding :: HasDebugCallStack => Int -> (BCInstrList, ByteOff)
 pushPadding !n = go n (nilOL, 0)
   where
     go n acc@(!instrs, !off) = case n of
@@ -1644,7 +1790,8 @@ pushPadding !n = go n (nilOL, 0)
 -- of making a multiway branch using a switch tree.
 -- What a load of hassle!
 
-mkMultiBranch :: Maybe Int      -- # datacons in tycon, if alg alt
+mkMultiBranch :: HasDebugCallStack
+              => Maybe Int      -- # datacons in tycon, if alg alt
                                 -- a hint; generates better code
                                 -- Nothing is always safe
               -> [(Discr, BCInstrList)]
@@ -1780,21 +1927,29 @@ instance Outputable Discr where
 lookupBCEnv_maybe :: Id -> BCEnv -> Maybe ByteOff
 lookupBCEnv_maybe = Map.lookup
 
-idSizeW :: DynFlags -> Id -> WordOff
-idSizeW dflags = WordOff . argRepSizeW dflags . bcIdArgRep
+idSizeW :: HasDebugCallStack => DynFlags -> Id -> WordOff
+idSizeW platform = WordOff . sum . map (argRepSizeW platform) . bcIdArgReps
 
-idSizeCon :: DynFlags -> Id -> ByteOff
-idSizeCon dflags = ByteOff . primRepSizeB dflags . bcIdPrimRep
+-- fixme this doesn't widen stuff to word width
+idSizeCon :: HasDebugCallStack => DynFlags -> Id -> ByteOff
+-- idSizeCon dflags = ByteOff . primRepSizeB dflags . bcIdPrimRep
+idSizeCon dflags = ByteOff . sum . map (primRepSizeB dflags) . bcIdPrimReps
 
-bcIdArgRep :: Id -> ArgRep
+bcIdArgRep :: HasDebugCallStack => Id -> ArgRep
 bcIdArgRep = toArgRep . bcIdPrimRep
 
-bcIdPrimRep :: Id -> PrimRep
+bcIdPrimRep :: HasDebugCallStack => Id -> PrimRep
 bcIdPrimRep id
   | [rep] <- typePrimRepArgs (idType id)
   = rep
   | otherwise
   = pprPanic "bcIdPrimRep" (ppr id <+> dcolon <+> ppr (idType id))
+
+bcIdArgReps :: HasDebugCallStack => Id -> [ArgRep]
+bcIdArgReps = map toArgRep . bcIdPrimReps
+
+bcIdPrimReps :: HasDebugCallStack => Id -> [PrimRep]
+bcIdPrimReps id = typePrimRepArgs (idType id)
 
 repSizeWords :: DynFlags -> PrimRep -> WordOff
 repSizeWords dflags rep = WordOff $ argRepSizeW dflags (toArgRep rep)
@@ -1808,8 +1963,9 @@ isVoidArg V = True
 isVoidArg _ = False
 
 -- See bug #1257
-multiValException :: a
-multiValException = throwGhcException (ProgramError
+multiValException :: HasCallStack => a
+multiValException = -- throwGhcException (ProgramError
+  pprPanic "multiValException" (text
   ("Error: bytecode compiler can't handle unboxed tuples and sums.\n"++
    "  Possibly due to foreign import/export decls in source.\n"++
    "  Workaround: use -fobject-code, or compile this module to .o separately."))
@@ -1857,7 +2013,7 @@ splitApp (AnnApp (_,f) (_,a))    = case splitApp f of
 splitApp e                       = (e, [])
 
 
-bcView :: AnnExpr' Var ann -> Maybe (AnnExpr' Var ann)
+bcView :: HasDebugCallStack => AnnExpr' Var ann -> Maybe (AnnExpr' Var ann)
 -- The "bytecode view" of a term discards
 --  a) type abstractions
 --  b) type applications
@@ -1878,7 +2034,7 @@ isVAtom (AnnVar v)              = isVoidArg (bcIdArgRep v)
 isVAtom (AnnCoercion {})        = True
 isVAtom _                     = False
 
-atomPrimRep :: AnnExpr' Id ann -> PrimRep
+atomPrimRep :: HasDebugCallStack => AnnExpr' Id ann -> PrimRep
 atomPrimRep e | Just e' <- bcView e = atomPrimRep e'
 atomPrimRep (AnnVar v)              = bcIdPrimRep v
 atomPrimRep (AnnLit l)              = typePrimRep1 (literalType l)
@@ -1890,7 +2046,7 @@ atomPrimRep (AnnCase _ _ ty _)      = ASSERT(typePrimRep ty == [LiftedRep]) Lift
 atomPrimRep (AnnCoercion {})        = VoidRep
 atomPrimRep other = pprPanic "atomPrimRep" (ppr (deAnnotate' other))
 
-atomRep :: AnnExpr' Id ann -> ArgRep
+atomRep :: HasDebugCallStack => AnnExpr' Id ann -> ArgRep
 atomRep e = toArgRep (atomPrimRep e)
 
 -- | Let szsw be the sizes in bytes of some items pushed onto the stack, which
@@ -1899,8 +2055,12 @@ atomRep e = toArgRep (atomPrimRep e)
 mkStackOffsets :: ByteOff -> [ByteOff] -> [ByteOff]
 mkStackOffsets original_depth szsb = tail (scanl' (+) original_depth szsb)
 
-typeArgRep :: Type -> ArgRep
+typeArgRep :: HasDebugCallStack => Type -> ArgRep
 typeArgRep = toArgRep . typePrimRep1
+
+typeArgReps :: HasDebugCallStack => Type -> [ArgRep]
+typeArgReps = map toArgRep . typePrimRepArgs -- typePrimRepArgs (idType id)
+
 
 -- -----------------------------------------------------------------------------
 -- The bytecode generator's monad

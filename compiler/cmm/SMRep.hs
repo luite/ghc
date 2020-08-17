@@ -100,7 +100,7 @@ bytesToWordsRoundUp dflags n = (n + word_size - 1) `quot` word_size
 -- StgWord is a type representing an StgWord on the target platform.
 -- A Word64 is large enough to hold a Word for either a 32bit or 64bit platform
 newtype StgWord = StgWord Word64
-    deriving (Eq, Bits)
+    deriving (Eq, Bits, Show)
 
 fromStgWord :: StgWord -> Integer
 fromStgWord (StgWord i) = toInteger i

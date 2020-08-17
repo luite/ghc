@@ -196,6 +196,102 @@ INFO_TABLE_RET( stg_ctoi_V, RET_BCO )
 }
 
 /*
+ * When the returned value is an unboxed tuple
+ */
+INFO_TABLE_RET( stg_ctoi_T, RET_BCO )
+    /* explicit stack */
+{
+    Sp_adj(-1);
+    jump stg_yield_to_interpreter [];
+}
+
+INFO_TABLE_RET ( stg_save_R1_p, RET_BCO )
+{
+    Sp(1) = R1;
+    Sp(0) = stg_ret_p_info;
+    Sp_adj(2);
+    jump %ENTRY_CODE(Sp(0)) [*];
+}
+
+INFO_TABLE_RET ( stg_save_R2_p, RET_BCO )
+{
+    Sp(1) = R1;
+    Sp(0) = stg_ret_p_info;
+    Sp_adj(2);
+    jump %ENTRY_CODE(Sp(0)) [*];
+
+}
+
+INFO_TABLE_RET ( stg_save_R3_p, RET_BCO )
+{
+    Sp(1) = R1;
+    Sp(0) = stg_ret_p_info;
+    Sp_adj(2);
+    jump %ENTRY_CODE(Sp(0)) [*];
+}
+
+INFO_TABLE_RET ( stg_save_R1_n, RET_BCO )
+{
+    Sp(1) = R1;
+    Sp(0) = stg_ret_n_info;
+    Sp_adj(2);
+    jump %ENTRY_CODE(Sp(0)) [*];
+}
+
+INFO_TABLE_RET ( stg_save_R2_n, RET_BCO )
+{
+    Sp(1) = R1;
+    Sp(0) = stg_ret_n_info;
+    Sp_adj(2);
+    jump %ENTRY_CODE(Sp(0)) [*];
+
+}
+
+INFO_TABLE_RET ( stg_save_R3_n, RET_BCO )
+{
+    Sp(1) = R1;
+    Sp(0) = stg_ret_n_info;
+    Sp_adj(2);
+    jump %ENTRY_CODE(Sp(0)) [*];
+}
+
+INFO_TABLE_RET ( stg_save_D1, RET_BCO )
+{
+    // check offset for 64 bit
+    // Sp_adj(-1) - SIZEOF_DOUBLE;
+
+    D_[Sp + WDS(1)] = D1;
+    Sp(0) = stg_ret_d_info;
+    Sp_adj(2);
+    jump %ENTRY_CODE(Sp(0)) [*];
+}
+
+INFO_TABLE_RET ( stg_save_D2, RET_BCO )
+{
+    D_[Sp + WDS(1)] = D2;
+    Sp(0) = stg_ret_d_info;
+    Sp_adj(2);
+    jump %ENTRY_CODE(Sp(0)) [*];
+}
+
+INFO_TABLE_RET ( stg_save_F1, RET_BCO )
+{
+    F_[Sp + WDS(1)] = F1;
+    Sp(0) = stg_ret_f_info;
+    Sp_adj(2);
+    jump %ENTRY_CODE(Sp(0)) [*];
+}
+
+INFO_TABLE_RET ( stg_save_F2, RET_BCO )
+{
+    F_[Sp + WDS(1)] = F2;
+    Sp(0) = stg_ret_f_info;
+    Sp_adj(2);
+    jump %ENTRY_CODE(Sp(0)) [*];
+}
+
+
+/*
  * Dummy info table pushed on the top of the stack when the interpreter
  * should apply the BCO on the stack to its arguments, also on the
  * stack.

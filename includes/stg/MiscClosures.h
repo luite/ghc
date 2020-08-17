@@ -86,6 +86,18 @@ RTS_RET(stg_ctoi_F1);
 RTS_RET(stg_ctoi_D1);
 RTS_RET(stg_ctoi_L1);
 RTS_RET(stg_ctoi_V);
+RTS_RET(stg_ctoi_T);
+
+RTS_RET(stg_save_R1_p);
+RTS_RET(stg_save_R2_p);
+RTS_RET(stg_save_R3_p);
+RTS_RET(stg_save_R1_n);
+RTS_RET(stg_save_R2_n);
+RTS_RET(stg_save_R3_n);
+RTS_RET(stg_save_D1);
+RTS_RET(stg_save_D2);
+RTS_RET(stg_save_F1);
+RTS_RET(stg_save_F2);
 
 RTS_RET(stg_apply_interp);
 

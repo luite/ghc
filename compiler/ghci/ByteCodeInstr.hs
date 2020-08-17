@@ -86,7 +86,7 @@ data BCInstr
 
    -- Push an alt continuation
    | PUSH_ALTS          (ProtoBCO Name)
-   | PUSH_ALTS_UNLIFTED (ProtoBCO Name) ArgRep
+   | PUSH_ALTS_UNLIFTED (ProtoBCO Name) [ArgRep]
 
    -- Pushing 8, 16 and 32 bits of padding (for constructors).
    | PUSH_PAD8
@@ -169,8 +169,8 @@ data BCInstr
 
    -- To Infinity And Beyond
    | ENTER
-   | RETURN             -- return a lifted value
-   | RETURN_UBX ArgRep -- return an unlifted value, here's its rep
+   | RETURN              -- return a lifted value
+   | RETURN_UBX [ArgRep] -- return an unlifted value, here's its rep
 
    -- Breakpoints
    | BRK_FUN          Word16 Unique (RemotePtr CostCentre)

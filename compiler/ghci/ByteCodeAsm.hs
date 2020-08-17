@@ -7,7 +7,7 @@
 -- | ByteCodeLink: Bytecode assembler and linker
 module ByteCodeAsm (
         assembleBCOs, assembleOneBCO,
-
+        non_void, -- fixme
         bcoFreeNames,
         SizedSeq, sizeSS, ssElts,
         iNTERP_STACK_CHECK_THRESH
@@ -30,6 +30,10 @@ import Literal
 import TyCon
 import FastString
 import StgCmmLayout     ( ArgRep(..) )
+import CmmUtils
+import CmmNode
+import CmmCallConv
+import CmmExpr
 import SMRep
 import DynFlags
 import Outputable
@@ -59,6 +63,8 @@ import Data.List
 import Data.Map (Map)
 import Data.Maybe (fromMaybe)
 import qualified Data.Map as Map
+import qualified Data.ByteString as B
+import qualified Data.ByteString.Char8 as C8
 
 -- -----------------------------------------------------------------------------
 -- Unlinked BCOs
@@ -374,10 +380,8 @@ assembleI dflags i = case i of
   PUSH_ALTS proto          -> do let ul_bco = assembleBCO dflags proto
                                  p <- ioptr (liftM BCOPtrBCO ul_bco)
                                  emit bci_PUSH_ALTS [Op p]
-  PUSH_ALTS_UNLIFTED proto pk
-                           -> do let ul_bco = assembleBCO dflags proto
-                                 p <- ioptr (liftM BCOPtrBCO ul_bco)
-                                 emit (push_alts pk) [Op p]
+  PUSH_ALTS_UNLIFTED proto pks
+                           -> push_alts_unlifted dflags proto pks
   PUSH_PAD8                -> emit bci_PUSH_PAD8 []
   PUSH_PAD16               -> emit bci_PUSH_PAD16 []
   PUSH_PAD32               -> emit bci_PUSH_PAD32 []
@@ -435,7 +439,7 @@ assembleI dflags i = case i of
   JMP       l              -> emit bci_JMP [LabelOp l]
   ENTER                    -> emit bci_ENTER []
   RETURN                   -> emit bci_RETURN []
-  RETURN_UBX rep           -> emit (return_ubx rep) []
+  RETURN_UBX reps          -> return_ubx dflags (non_void reps)
   CCALL off m_addr i       -> do np <- addr m_addr
                                  emit bci_CCALL [SmallOp off, Op np, SmallOp i]
   BRK_FUN index uniq cc    -> do p1 <- ptr BCOPtrBreakArray
@@ -445,6 +449,7 @@ assembleI dflags i = case i of
                                                    Op q, Op np]
 
   where
+    platform = targetPlatform dflags
     literal (LitLabel fs (Just sz) _)
      | platformOS (targetPlatform dflags) == OSMinGW32
          = litlabel (appendFS fs (mkFastString ('@':show sz)))
@@ -481,27 +486,99 @@ assembleI dflags i = case i of
 isLarge :: Word -> Bool
 isLarge n = n > 65535
 
-push_alts :: ArgRep -> Word16
-push_alts V   = bci_PUSH_ALTS_V
-push_alts P   = bci_PUSH_ALTS_P
-push_alts N   = bci_PUSH_ALTS_N
-push_alts L   = bci_PUSH_ALTS_L
-push_alts F   = bci_PUSH_ALTS_F
-push_alts D   = bci_PUSH_ALTS_D
+push_alts :: [ArgRep] -> Maybe Word16
+push_alts [V]   = Just bci_PUSH_ALTS_V
+push_alts [P]   = Just bci_PUSH_ALTS_P
+push_alts [N]   = Just bci_PUSH_ALTS_N
+push_alts [L]   = Just bci_PUSH_ALTS_L
+push_alts [F]   = Just bci_PUSH_ALTS_F
+push_alts [D]   = Just bci_PUSH_ALTS_D
+push_alts _     = Nothing
+{-
 push_alts V16 = error "push_alts: vector"
 push_alts V32 = error "push_alts: vector"
 push_alts V64 = error "push_alts: vector"
+-}
 
-return_ubx :: ArgRep -> Word16
-return_ubx V   = bci_RETURN_V
-return_ubx P   = bci_RETURN_P
-return_ubx N   = bci_RETURN_N
-return_ubx L   = bci_RETURN_L
-return_ubx F   = bci_RETURN_F
-return_ubx D   = bci_RETURN_D
-return_ubx V16 = error "return_ubx: vector"
-return_ubx V32 = error "return_ubx: vector"
-return_ubx V64 = error "return_ubx: vector"
+non_void :: [ArgRep] -> [ArgRep]
+non_void (V:xs) = xs
+non_void xs     = xs
+
+push_alts_unlifted :: DynFlags -> ProtoBCO Name -> [ArgRep] -> Assembler ()
+push_alts_unlifted dflags proto args = do
+  let ul_bco = assembleBCO dflags proto
+  p <- ioptr (liftM BCOPtrBCO ul_bco)
+  -- fixme make proper sig
+  case push_alts args of
+    Just pa -> emit pa [Op p]
+    _       -> do
+      sig <- ubx_tup_sig dflags (non_void args)
+      emit bci_PUSH_ALTS_T [Op p, SmallOp $ fromIntegral (genericLength $ non_void args), Op sig]
+
+return_ubx :: DynFlags -> [ArgRep] -> Assembler () -- Word16
+-- special cases
+return_ubx _ []          = emit bci_RETURN_V []
+return_ubx _ [P]         = emit bci_RETURN_P []
+return_ubx _ [N]         = emit bci_RETURN_N []
+return_ubx _ [L]         = emit bci_RETURN_L []
+return_ubx _ [F]         = emit bci_RETURN_F []
+return_ubx _ [D]         = emit bci_RETURN_D []
+-- general case
+return_ubx dflags nonVoidArgs
+  | isLarge l = panic "return_ubx: tuple too big"
+  | otherwise = do
+      sig <- ubx_tup_sig dflags nonVoidArgs
+      emit bci_RETURN_T [SmallOp $ fromIntegral l, Op sig ]
+  where
+    l = genericLength nonVoidArgs
+    int = words . mkLitI
+    words ws = lit (map BCONPtrWord ws)
+
+
+ubx_tup_sig :: DynFlags -> [ArgRep] -> Assembler Word
+ubx_tup_sig dflags reps = do  
+  lit [BCONPtrStr bs]
+  where
+    (boff, posns) = assignArgumentsPos dflags 0 NativeReturn toCmm reps
+    toCmm = primRepCmmType dflags . argToPrim 
+    bs    = B.pack $ concatMap sig_bytes posns
+    literal (LitString bs) = lit [BCONPtrStr bs]
+
+
+sig_bytes :: (ArgRep, ParamLocation) -> [Word8]
+sig_bytes (r, loc) = arg_byte r : loc_bytes loc
+
+-- fixme do we get zeroes here?
+loc_bytes :: ParamLocation -> [Word8]
+loc_bytes (StackParam offset)                = [1, fromIntegral offset]
+loc_bytes (RegisterParam (VanillaReg off _)) = [2, fromIntegral off]
+loc_bytes (RegisterParam (FloatReg off)) = [3, fromIntegral off]
+loc_bytes (RegisterParam (DoubleReg off)) = [4, fromIntegral off]
+loc_bytes (RegisterParam (LongReg off)) = [5, fromIntegral off]
+loc_bytes (RegisterParam (XmmReg off)) = [6, fromIntegral off]
+loc_bytes (RegisterParam (YmmReg off)) = [7, fromIntegral off]
+loc_bytes (RegisterParam (ZmmReg off)) = [8, fromIntegral off]
+loc_bytes _ = panic "GHC.ByteCode.Asm.loc_bytes"
+
+
+arg_byte :: ArgRep -> Word8
+arg_byte P = 1
+arg_byte N = 2
+arg_byte L = 3
+arg_byte F = 4
+arg_byte D = 5
+arg_byte _ = panic "GHC.ByteCode.Asm.sig_byte"
+
+
+-- we really shouldn't do this
+argToPrim :: ArgRep -> PrimRep
+argToPrim P = LiftedRep
+argToPrim V = VoidRep
+argToPrim N = WordRep -- UnliftedRep?
+argToPrim L = Word64Rep
+argToPrim F = FloatRep
+argToPrim D = DoubleRep
+argToPrim _ = panic "GHC.ByteCode.argToPrim"
 
 -- Make lists of host-sized words for literals, so that when the
 -- words are placed in memory at increasing addresses, the
