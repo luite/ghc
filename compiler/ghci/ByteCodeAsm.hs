@@ -501,8 +501,9 @@ push_alts V64 = error "push_alts: vector"
 -}
 
 non_void :: [ArgRep] -> [ArgRep]
-non_void (V:xs) = xs
-non_void xs     = xs
+non_void = filter nv
+  where nv V = False
+        nv _ = True
 
 push_alts_unlifted :: DynFlags -> ProtoBCO Name -> [ArgRep] -> Assembler ()
 push_alts_unlifted dflags proto args = do
